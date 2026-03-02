@@ -115,8 +115,6 @@ You should run `vet --update-models` when:
 - `vet --list-models` does not show a model you or the user expects to be available.
 - The user explicitly asks you to update the model registry.
 
-Do NOT run `--update-models` on every vet invocation. It makes a network request and adds latency. Only run it when a model is missing, unrecognized, or explicitly requested.
-
 ## Additional Information
 
 Additional information can be found in the vet repo:
