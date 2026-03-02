@@ -95,6 +95,8 @@ def create_parser() -> argparse.ArgumentParser:
         metavar="REF",
         help=f"Git commit, branch, or ref to use as the base for computing the diff (default: {CLI_DEFAULTS.base_commit})",
     )
+    # By default, vet includes all changes (staged, unstaged, and untracked). With --staged, only staged changes are included.
+    diff_group.add_argument("--staged", action="store_true", help="Only analyze staged changes")
 
     context_group = parser.add_argument_group("context options")
     context_group.add_argument(
@@ -493,6 +495,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 2
 
+    if args.staged and args.base_commit:
+        """
+        This is a sanity check to prevent users from accidentally using --base-commit with --staged,
+        which would lead to confusing results since --base-commit implies comparing against the full commit history
+        while --staged implies comparing against only staged changes."""
+        parser.error("Cannot specify both --staged and --base-commit")
+
     if args.verbose and args.quiet:
         print(
             "vet: --verbose and --quiet are mutually exclusive",
@@ -631,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
             config=config,
             conversation_history=conversation_history,
             extra_context=extra_context,
+            staged=args.staged,
         )
     except AgentCLINotFoundError as e:
         print(f"vet: {e}", file=sys.stderr)

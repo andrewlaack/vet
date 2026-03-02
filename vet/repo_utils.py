@@ -13,13 +13,32 @@ from vet.imbue_core.async_monkey_patches import log_exception
 VET_MAX_PROMPT_TOKENS = 10000
 
 
-def get_code_to_check(relative_to: str, repo_path: Path) -> tuple[str, str, str]:
+def get_code_to_check(relative_to: str, repo_path: Path, staged: bool = False) -> tuple[str, str, str]:
     """
     Returns:
     - The commit hash to use as the base commit for the diff.
     - The combined diff including staged, unstaged, and untracked changes. (compatible with `git apply`)
     - The combined diff but with binary diffs shortened. (cannot be applied if binary changes are present)
     """
+    repo = SyncLocalGitRepo(repo_path)
+
+    if staged:
+        # In staged mode we ignore `relative_to` entirely. Avoid resolving the
+        # configured base commit since it may refer to a branch/ref that doesn't
+        # exist in the current working copy (e.g., config sets `main`). This
+        # prevents unnecessary git errors when the user explicitly requested
+        # staged-only analysis.
+        try:
+            combined_diff = repo.get_git_diff(staged=True)
+            combined_diff_no_binary = repo.get_git_diff(staged=True, include_binary=False)
+        except RunCommandError as e:
+            raise GitCommandError(e, "get staged diff", repo_path) from e
+
+        # No untracked files in staged mode. Use HEAD as the base commit for
+        # consistency with non-staged behavior.
+        base_commit = repo.run_git(["rev-parse", "HEAD"])
+        return base_commit, combined_diff, combined_diff_no_binary
+
     try:
         base_commit = find_relative_to_commit_hash(relative_to, repo_path=repo_path)
     except RunCommandError as e:
@@ -28,8 +47,6 @@ def get_code_to_check(relative_to: str, repo_path: Path) -> tuple[str, str, str]
             "determine base commit for verification",
             repo_path,
         ) from e
-
-    repo = SyncLocalGitRepo(repo_path)
 
     # Get the combined diff which includes all changes; staged, unstaged, and untracked.
     try:
