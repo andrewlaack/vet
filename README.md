@@ -20,13 +20,6 @@
 - **Bring-your-own-model**: works with any provider using your own API keys, no subscription ever.
 - **No data collection**: requests go directly to inference providers, never through our servers.
 
-<p align="center">
-  <a href="https://github.com/imbue-ai/vet">
-    <img alt="Vet: Verify Everything" src="images/vet_example.png" width="100%">
-  </a>
-</p>
-
-
 ## Using Vet with Coding Agents
 
 Vet includes an agent skill. When installed, agents will proactively run vet after code changes to find issues with the new code and mismatches between the user's request and the agent's actions.
@@ -98,6 +91,12 @@ Or with [uv](https://docs.astral.sh/uv/):
 ```bash
 uv tool install verify-everything
 ```
+
+<p align="center">
+  <a href="https://github.com/imbue-ai/vet">
+    <img alt="Vet: Verify Everything" src="images/vet_example.png" width="100%">
+  </a>
+</p>
 
 ### Usage
 
