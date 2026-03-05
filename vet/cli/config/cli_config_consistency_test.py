@@ -16,6 +16,7 @@ IGNORED_ARGS = {
     # agent-mode flags are intentionally CLI-only
     "agentic",
     "agent_harness",
+    "update_models",
 }
 
 
