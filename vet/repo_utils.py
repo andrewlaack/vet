@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from vet.errors import GitCommandError
@@ -11,6 +12,29 @@ from vet.imbue_core.async_monkey_patches import log_exception
 # Currently, the prompt is well under 10k tokens, but this value might need to be bumped up if we add a lot of additional
 # identification guides, few-shot examples, or other context.
 VET_MAX_PROMPT_TOKENS = 10000
+
+
+def strip_submodule_diffs(diff_string: str) -> str:
+    if not diff_string:
+        return diff_string
+
+    sections = re.split(r"(?=^diff --git )", diff_string, flags=re.MULTILINE)
+
+    filtered: list[str] = []
+    for section in sections:
+        if not section.startswith("diff --git "):
+            filtered.append(section)
+            continue
+
+        hunk_start = section.find("\n@@ ")
+        header = section[:hunk_start] if hunk_start != -1 else section
+
+        if " 160000" in header:
+            continue
+
+        filtered.append(section)
+
+    return "".join(filtered)
 
 
 def get_code_to_check(relative_to: str, repo_path: Path, only_staged: bool = False) -> tuple[str, str, str]:
@@ -47,7 +71,11 @@ def get_code_to_check(relative_to: str, repo_path: Path, only_staged: bool = Fal
             # error information.
             raise GitCommandError(e, "get staged diff or determine HEAD commit", repo_path) from e
 
-        return base_commit, combined_diff, combined_diff_no_binary
+        return (
+            base_commit,
+            strip_submodule_diffs(combined_diff),
+            strip_submodule_diffs(combined_diff_no_binary),
+        )
 
     try:
         base_commit = find_relative_to_commit_hash(relative_to, repo_path=repo_path)
@@ -106,4 +134,8 @@ def get_code_to_check(relative_to: str, repo_path: Path, only_staged: bool = Fal
     if untracked_diffs_no_binary:
         combined_diff_no_binary += "\n" + "\n".join(untracked_diffs_no_binary)
 
-    return base_commit, combined_diff, combined_diff_no_binary
+    return (
+        base_commit,
+        strip_submodule_diffs(combined_diff),
+        strip_submodule_diffs(combined_diff_no_binary),
+    )
