@@ -113,7 +113,7 @@ Compare against a base ref/commit:
 vet "Refactor storage layer" --base-commit main
 ```
 
-Use Claude Code or Codex instead of LLM APIs (`--agent-harness`: `claude`, `codex`):
+Use Claude Code, Codex, or OpenCode instead of LLM APIs (`--agent-harness`: `claude`, `codex`, `opencode`):
 
 ```bash
 vet "Implement X without breaking Y" --agentic --agent-harness claude

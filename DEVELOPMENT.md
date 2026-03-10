@@ -37,6 +37,7 @@ Without this Claude Code will not be installed in the image.
 ./dev/vet.sh "check for bugs" --base-commit main
 ./dev/vet.sh --base-commit main --agentic --agent-harness codex
 ./dev/vet.sh --base-commit main --agentic --agent-harness claude  # requires I_CHOOSE_CONVENIENCE_OVER_FREEDOM=true
+./dev/vet.sh --base-commit main --agentic --agent-harness opencode
 ```
 
 The image is built automatically on each run. This process should be fast due to layer caching.

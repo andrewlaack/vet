@@ -279,6 +279,7 @@ def list_issue_codes() -> None:
 _HARNESS_ISSUE_URLS: dict[AgentHarnessType, str] = {
     AgentHarnessType.CLAUDE: "https://github.com/anthropics/claude-code/issues",
     AgentHarnessType.CODEX: "https://github.com/openai/codex/issues",
+    AgentHarnessType.OPENCODE: "https://github.com/sst/opencode/issues",
 }
 
 
@@ -661,7 +662,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             print(f"vet: {e}", file=sys.stderr)
             print(
-                "hint: If you have a Claude or Codex subscription, try --agentic to use your\n"
+                "hint: If you have a Claude, Codex, or OpenCode subscription, try --agentic to use your\n"
                 "      locally installed coding agent CLI instead.",
                 file=sys.stderr,
             )
@@ -727,7 +728,7 @@ def main(argv: list[str] | None = None) -> int:
     except MissingAPIKeyError as e:
         print(f"vet: {e}", file=sys.stderr)
         print(
-            "hint: If you have a Claude or Codex subscription, try --agentic to use your\n"
+            "hint: If you have a Claude, Codex, or OpenCode subscription, try --agentic to use your\n"
             "      locally installed coding agent CLI instead.",
             file=sys.stderr,
         )

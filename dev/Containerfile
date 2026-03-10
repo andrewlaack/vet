@@ -2,8 +2,7 @@ FROM debian:bookworm-slim
 
 ARG INSTALL_CLAUDE=false
 
-# OpenCode is included for in-container development.
-# It is not currently supported when doing agentic verification.
+# OpenCode is included for in-container development and agentic verification.
 
 RUN apt-get update \
  && apt-get install -y npm git curl \
