@@ -60,6 +60,7 @@ class AnthropicModelName(enum.StrEnum):
     CLAUDE_4_5_OPUS = "claude-opus-4-5"
     CLAUDE_4_6_OPUS = "claude-opus-4-6"
     CLAUDE_4_7_OPUS = "claude-opus-4-7"
+    CLAUDE_4_8_OPUS = "claude-opus-4-8"
     CLAUDE_4_SONNET = "claude-sonnet-4-0"
     CLAUDE_4_5_SONNET = "claude-sonnet-4-5"
     CLAUDE_4_6_SONNET = "claude-sonnet-4-6"
@@ -71,6 +72,7 @@ class AnthropicModelName(enum.StrEnum):
     CLAUDE_4_5_SONNET_LONG = "claude-sonnet-4-5-long"
     CLAUDE_4_6_OPUS_LONG = "claude-opus-4-6-long"
     CLAUDE_4_7_OPUS_LONG = "claude-opus-4-7-long"
+    CLAUDE_4_8_OPUS_LONG = "claude-opus-4-8-long"
 
 
 # Basic info is available at https://docs.anthropic.com/claude/reference/models
@@ -142,6 +144,21 @@ ANTHROPIC_MODEL_INFO_BY_NAME: FrozenMapping[AnthropicModelName, ModelInfo] = Fro
         ),
         AnthropicModelName.CLAUDE_4_7_OPUS: ModelInfo(
             model_name=AnthropicModelName.CLAUDE_4_7_OPUS,
+            cost_per_input_token=5.00 / 1_000_000,
+            cost_per_output_token=25.00 / 1_000_000,
+            max_input_tokens=200_000,
+            max_output_tokens=128_000,
+            rate_limit_req=4000 / 60,
+            rate_limit_tok=2_000_000 / 60,
+            rate_limit_output_tok=400_000 / 60,
+            provider_specific_info=AnthropicModelInfo(
+                cost_per_5m_cache_write_token=6.25 / 1_000_000,
+                cost_per_1h_cache_write_token=10 / 1_000_000,
+                cost_per_cache_read_token=0.50 / 1_000_000,
+            ),
+        ),
+        AnthropicModelName.CLAUDE_4_8_OPUS: ModelInfo(
+            model_name=AnthropicModelName.CLAUDE_4_8_OPUS,
             cost_per_input_token=5.00 / 1_000_000,
             cost_per_output_token=25.00 / 1_000_000,
             max_input_tokens=200_000,
@@ -265,6 +282,17 @@ ANTHROPIC_MODEL_INFO_BY_NAME: FrozenMapping[AnthropicModelName, ModelInfo] = Fro
             rate_limit_tok=1_000_000 / 60,
             rate_limit_output_tok=200_000 / 60,
         ),
+        AnthropicModelName.CLAUDE_4_8_OPUS_LONG: ModelInfo(
+            model_name=AnthropicModelName.CLAUDE_4_8_OPUS_LONG,
+            # Opus 4.8 has a native 1M context window. Pricing tiers match 4.7 long-context.
+            cost_per_input_token=9.00 / 1_000_000,
+            cost_per_output_token=37.50 / 1_000_000,
+            max_input_tokens=1_000_000,
+            max_output_tokens=128_000,
+            rate_limit_req=None,  # Currently no limit set in our dashboard
+            rate_limit_tok=1_000_000 / 60,
+            rate_limit_output_tok=200_000 / 60,
+        ),
     }
 )
 
@@ -275,6 +303,8 @@ _MODELS_WITHOUT_TEMPERATURE: frozenset[AnthropicModelName] = frozenset(
     {
         AnthropicModelName.CLAUDE_4_7_OPUS,
         AnthropicModelName.CLAUDE_4_7_OPUS_LONG,
+        AnthropicModelName.CLAUDE_4_8_OPUS,
+        AnthropicModelName.CLAUDE_4_8_OPUS_LONG,
     }
 )
 
@@ -504,6 +534,7 @@ class AnthropicAPI(LanguageModelAPI):
                     AnthropicModelName.CLAUDE_4_SONNET_LONG: AnthropicModelName.CLAUDE_4_SONNET,
                     AnthropicModelName.CLAUDE_4_6_OPUS_LONG: AnthropicModelName.CLAUDE_4_6_OPUS,
                     AnthropicModelName.CLAUDE_4_7_OPUS_LONG: AnthropicModelName.CLAUDE_4_7_OPUS,
+                    AnthropicModelName.CLAUDE_4_8_OPUS_LONG: AnthropicModelName.CLAUDE_4_8_OPUS,
                 }
 
                 if self.model_name in _LONG_TO_STANDARD:
@@ -585,6 +616,7 @@ class AnthropicAPI(LanguageModelAPI):
                     AnthropicModelName.CLAUDE_4_SONNET_LONG: AnthropicModelName.CLAUDE_4_SONNET,
                     AnthropicModelName.CLAUDE_4_6_OPUS_LONG: AnthropicModelName.CLAUDE_4_6_OPUS,
                     AnthropicModelName.CLAUDE_4_7_OPUS_LONG: AnthropicModelName.CLAUDE_4_7_OPUS,
+                    AnthropicModelName.CLAUDE_4_8_OPUS_LONG: AnthropicModelName.CLAUDE_4_8_OPUS,
                 }
 
                 if self.model_name in _LONG_TO_STANDARD_STREAM:
