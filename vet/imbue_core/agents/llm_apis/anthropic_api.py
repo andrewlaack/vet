@@ -60,6 +60,8 @@ class AnthropicModelName(enum.StrEnum):
     CLAUDE_4_6_OPUS = "claude-opus-4-6"
     CLAUDE_4_7_OPUS = "claude-opus-4-7"
     CLAUDE_4_8_OPUS = "claude-opus-4-8"
+    # Fable 5 is a Mythos-class model with a native 1M-token context window, so it does not need a
+    # separate "-long" variant the way the Opus models do.
     CLAUDE_FABLE_5 = "claude-fable-5"
     CLAUDE_4_SONNET = "claude-sonnet-4-0"
     CLAUDE_4_5_SONNET = "claude-sonnet-4-5"
@@ -73,7 +75,6 @@ class AnthropicModelName(enum.StrEnum):
     CLAUDE_4_6_OPUS_LONG = "claude-opus-4-6-long"
     CLAUDE_4_7_OPUS_LONG = "claude-opus-4-7-long"
     CLAUDE_4_8_OPUS_LONG = "claude-opus-4-8-long"
-    CLAUDE_FABLE_5_LONG = "claude-fable-5-long"
 
 
 # Basic info is available at https://docs.anthropic.com/claude/reference/models
@@ -175,9 +176,12 @@ ANTHROPIC_MODEL_INFO_BY_NAME: FrozenMapping[AnthropicModelName, ModelInfo] = Fro
         ),
         AnthropicModelName.CLAUDE_FABLE_5: ModelInfo(
             model_name=AnthropicModelName.CLAUDE_FABLE_5,
+            # Fable 5 has a native 1M-token context window (verified against the API: inputs above
+            # 200k are accepted without any beta header, and the API rejects prompts over 1,000,000
+            # tokens). Pricing is a flat $10 / $50 per 1M tokens with no long-context tier.
             cost_per_input_token=10.00 / 1_000_000,
             cost_per_output_token=50.00 / 1_000_000,
-            max_input_tokens=200_000,
+            max_input_tokens=1_000_000,
             max_output_tokens=128_000,
             rate_limit_req=4000 / 60,
             rate_limit_tok=2_000_000 / 60,
@@ -309,20 +313,6 @@ ANTHROPIC_MODEL_INFO_BY_NAME: FrozenMapping[AnthropicModelName, ModelInfo] = Fro
             rate_limit_tok=1_000_000 / 60,
             rate_limit_output_tok=200_000 / 60,
         ),
-        AnthropicModelName.CLAUDE_FABLE_5_LONG: ModelInfo(
-            model_name=AnthropicModelName.CLAUDE_FABLE_5_LONG,
-            # Fable 5 has a native 1M context window. Long-context pricing tiers mirror the Opus
-            # long-context multipliers: the first 200_000 input tokens use the 10.0 / 1_000_000 rate
-            # and the next up to 800_000 use 20.0 / 1_000_000, so the maximum average cost per input
-            # token is (10.0 * 200_000 + 20.0 * 800_000) / 1_000_000 = 18.0 per 1_000_000.
-            cost_per_input_token=18.00 / 1_000_000,
-            cost_per_output_token=75.00 / 1_000_000,
-            max_input_tokens=1_000_000,
-            max_output_tokens=128_000,
-            rate_limit_req=None,  # Currently no limit set in our dashboard
-            rate_limit_tok=1_000_000 / 60,
-            rate_limit_output_tok=200_000 / 60,
-        ),
     }
 )
 
@@ -336,12 +326,11 @@ _MODELS_WITHOUT_TEMPERATURE: frozenset[AnthropicModelName] = frozenset(
         AnthropicModelName.CLAUDE_4_8_OPUS,
         AnthropicModelName.CLAUDE_4_8_OPUS_LONG,
         AnthropicModelName.CLAUDE_FABLE_5,
-        AnthropicModelName.CLAUDE_FABLE_5_LONG,
     }
 )
 
 
-def _extract_text_from_content_blocks(content_blocks: list) -> str:
+def _extract_text_from_content_blocks(content_blocks: list, stop_reason: str | None = None) -> str:
     """Concatenate the text from all ``text`` content blocks in an Anthropic message.
 
     Some models (e.g. Claude Fable 5) emit a ``thinking`` block before the final ``text`` block even
@@ -349,12 +338,19 @@ def _extract_text_from_content_blocks(content_blocks: list) -> str:
     content block. We ignore non-text blocks (``thinking``, ``redacted_thinking``, etc.) and return
     only the visible text. For responses with a single ``text`` block this matches the previous
     ``only(content).text`` behavior.
+
+    Fable 5's safety classifiers can also produce a ``refusal`` stop reason with *no* content blocks
+    at all. In that case we return an empty string and let the caller propagate the refusal via the
+    stop reason, rather than raising. We only raise when the response is missing text for some other,
+    unexpected reason (which would indicate a real problem rather than a refusal).
     """
     text_blocks = [block.text for block in content_blocks if getattr(block, "type", None) == "text"]
     if not text_blocks:
+        if stop_reason == "refusal":
+            return ""
         raise BadAPIRequestError(
             f"Anthropic response contained no text content blocks (block types: "
-            f"{[getattr(block, 'type', None) for block in content_blocks]})"
+            f"{[getattr(block, 'type', None) for block in content_blocks]}, stop_reason: {stop_reason})"
         )
     return "".join(text_blocks)
 
@@ -586,7 +582,6 @@ class AnthropicAPI(LanguageModelAPI):
                     AnthropicModelName.CLAUDE_4_6_OPUS_LONG: AnthropicModelName.CLAUDE_4_6_OPUS,
                     AnthropicModelName.CLAUDE_4_7_OPUS_LONG: AnthropicModelName.CLAUDE_4_7_OPUS,
                     AnthropicModelName.CLAUDE_4_8_OPUS_LONG: AnthropicModelName.CLAUDE_4_8_OPUS,
-                    AnthropicModelName.CLAUDE_FABLE_5_LONG: AnthropicModelName.CLAUDE_FABLE_5,
                 }
 
                 if self.model_name in _LONG_TO_STANDARD:
@@ -619,7 +614,10 @@ class AnthropicAPI(LanguageModelAPI):
                         written_5m=api_result.usage.cache_creation.ephemeral_5m_input_tokens,
                         written_1h=api_result.usage.cache_creation.ephemeral_1h_input_tokens,
                     )
-                text = _extract_text_from_content_blocks(api_result.content)
+                text = _extract_text_from_content_blocks(
+                    api_result.content,
+                    stop_reason=str(api_result.stop_reason) if api_result.stop_reason else None,
+                )
                 if api_result.stop_reason:
                     stop_reason = _ANTHROPIC_STOP_REASON_TO_STOP_REASON.get(
                         str(api_result.stop_reason), ResponseStopReason.NONE
@@ -669,7 +667,6 @@ class AnthropicAPI(LanguageModelAPI):
                     AnthropicModelName.CLAUDE_4_6_OPUS_LONG: AnthropicModelName.CLAUDE_4_6_OPUS,
                     AnthropicModelName.CLAUDE_4_7_OPUS_LONG: AnthropicModelName.CLAUDE_4_7_OPUS,
                     AnthropicModelName.CLAUDE_4_8_OPUS_LONG: AnthropicModelName.CLAUDE_4_8_OPUS,
-                    AnthropicModelName.CLAUDE_FABLE_5_LONG: AnthropicModelName.CLAUDE_FABLE_5,
                 }
 
                 if self.model_name in _LONG_TO_STANDARD_STREAM:
@@ -700,7 +697,10 @@ class AnthropicAPI(LanguageModelAPI):
                         yield LanguageModelStreamDeltaEvent(delta=text_delta)
 
                     final_message = await stream.get_final_message()
-                    text = _extract_text_from_content_blocks(final_message.content)
+                    text = _extract_text_from_content_blocks(
+                        final_message.content,
+                        stop_reason=str(final_message.stop_reason) if final_message.stop_reason else None,
+                    )
                     stop_reason = (
                         final_message.stop_reason if final_message.stop_reason is not None else ResponseStopReason.NONE
                     )

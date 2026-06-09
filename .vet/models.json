@@ -70,7 +70,7 @@
         },
         "fable": {
           "model_id": "claude-fable-5",
-          "context_window": 200000,
+          "context_window": 1000000,
           "max_output_tokens": 128000,
           "supports_temperature": false
         }
