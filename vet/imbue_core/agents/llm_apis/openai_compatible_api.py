@@ -24,6 +24,7 @@ from vet.imbue_core.agents.llm_apis.data_types import LanguageModelResponse
 from vet.imbue_core.agents.llm_apis.data_types import LanguageModelResponseUsage
 from vet.imbue_core.agents.llm_apis.data_types import ResponseStopReason
 from vet.imbue_core.agents.llm_apis.errors import BadAPIRequestError
+from vet.imbue_core.agents.llm_apis.errors import ModelRefusalError
 from vet.imbue_core.agents.llm_apis.errors import PromptTooLongError
 from vet.imbue_core.agents.llm_apis.errors import TransientLanguageModelError
 from vet.imbue_core.agents.llm_apis.language_model_api import LanguageModelAPI
@@ -212,6 +213,7 @@ class OpenAICompatibleAPI(LanguageModelAPI):
 
             usage = None
             finish_reason: str | None = None
+            has_streamed_text = False
             async for chunk in api_result:
                 if hasattr(chunk, "usage") and chunk.usage is not None:
                     usage = chunk.usage
@@ -222,11 +224,19 @@ class OpenAICompatibleAPI(LanguageModelAPI):
                     data = only(chunk.choices)
                     delta = data.delta.content
                     if delta is not None:
+                        if delta:
+                            has_streamed_text = True
                         yield LanguageModelStreamDeltaEvent(delta=delta)
                     if data.finish_reason:
                         finish_reason = str(data.finish_reason)
 
             stop_reason = _OPENAI_COMPATIBLE_STOP_REASON_TO_STOP_REASON.get(str(finish_reason), ResponseStopReason.NONE)
+            # See _parse_response: a content filter refusal with no generated text is surfaced as an
+            # error rather than silently yielding an empty response.
+            if stop_reason == ResponseStopReason.CONTENT_FILTER and not has_streamed_text:
+                raise ModelRefusalError(
+                    "The model refused to generate a response (the provider's content filter " "declined the request)."
+                )
             if params.stop is not None and stop_reason == ResponseStopReason.END_TURN:
                 yield LanguageModelStreamDeltaEvent(delta=params.stop)
 
@@ -270,12 +280,20 @@ class OpenAICompatibleAPI(LanguageModelAPI):
     ) -> tuple[LanguageModelResponse, ...]:
         results = []
         for data in response.choices:
-            assert data.message.content is not None
-            text = data.message.content
-            token_count = self.count_tokens(text) + prompt_tokens
             stop_reason = _OPENAI_COMPATIBLE_STOP_REASON_TO_STOP_REASON.get(
                 str(data.finish_reason), ResponseStopReason.NONE
             )
+            # Models with safety classifiers (e.g. Claude Fable 5 via Anthropic's OpenAI-compatible
+            # endpoint) can refuse a request, returning finish_reason "content_filter" with empty
+            # content. Surface that to the user instead of returning an empty response. If the
+            # filter triggered after some text was generated, we keep the partial text.
+            if stop_reason == ResponseStopReason.CONTENT_FILTER and not data.message.content:
+                raise ModelRefusalError(
+                    "The model refused to generate a response (the provider's content filter " "declined the request)."
+                )
+            assert data.message.content is not None
+            text = data.message.content
+            token_count = self.count_tokens(text) + prompt_tokens
             if stop is not None and stop_reason == ResponseStopReason.END_TURN:
                 text += stop
             result = LanguageModelResponse(

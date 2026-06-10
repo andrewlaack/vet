@@ -77,6 +77,17 @@ class MissingAPIKeyError(LanguageModelError):
     pass
 
 
+class ModelRefusalError(LanguageModelError):
+    """Exception raised when the model refuses to generate any response.
+
+    Some models (e.g. Claude Fable 5) have safety classifiers that can decline a request,
+    returning a successful API response with a refusal stop reason and no content. We surface
+    this to the user instead of silently treating the empty response as a clean result. These
+    are deliberately not cached (the same prompt may succeed later) and not retried (the
+    classifiers are unlikely to change their decision on an immediate identical retry).
+    """
+
+
 class RetriableLanguageModelError(LanguageModelError):
     pass
 

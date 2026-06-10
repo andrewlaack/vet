@@ -33,6 +33,7 @@ from vet.imbue_core.agents.llm_apis.data_types import ResponseStopReason
 from vet.imbue_core.agents.llm_apis.errors import BadAPIRequestError
 from vet.imbue_core.agents.llm_apis.errors import LanguageModelInvalidModelNameError
 from vet.imbue_core.agents.llm_apis.errors import MissingAPIKeyError
+from vet.imbue_core.agents.llm_apis.errors import ModelRefusalError
 from vet.imbue_core.agents.llm_apis.errors import NewSeedRetriableLanguageModelError
 from vet.imbue_core.agents.llm_apis.errors import SafelyRetriableTransientLanguageModelError
 from vet.imbue_core.agents.llm_apis.errors import TransientLanguageModelError
@@ -340,14 +341,16 @@ def _extract_text_from_content_blocks(content_blocks: list, stop_reason: str | N
     ``only(content).text`` behavior.
 
     Fable 5's safety classifiers can also produce a ``refusal`` stop reason with *no* content blocks
-    at all. In that case we return an empty string and let the caller propagate the refusal via the
-    stop reason, rather than raising. We only raise when the response is missing text for some other,
-    unexpected reason (which would indicate a real problem rather than a refusal).
+    at all. In that case we raise ModelRefusalError so the refusal is surfaced to the user instead
+    of being silently treated as an empty (clean) review result. Missing text for any other reason
+    indicates a malformed response and raises BadAPIRequestError.
     """
     text_blocks = [block.text for block in content_blocks if getattr(block, "type", None) == "text"]
     if not text_blocks:
         if stop_reason == "refusal":
-            return ""
+            raise ModelRefusalError(
+                "The model refused to generate a response (the provider's safety classifiers " "declined the request)."
+            )
         raise BadAPIRequestError(
             f"Anthropic response contained no text content blocks (block types: "
             f"{[getattr(block, 'type', None) for block in content_blocks]}, stop_reason: {stop_reason})"
@@ -484,7 +487,7 @@ def _anthropic_exception_manager() -> Iterator[None]:
     except httpx.RemoteProtocolError as e:
         logger.debug(str(e))
         raise TransientLanguageModelError("httpx.RemoteProtocolError") from e
-    except (BadAPIRequestError, TransientLanguageModelError, MissingAPIKeyError):
+    except (BadAPIRequestError, TransientLanguageModelError, MissingAPIKeyError, ModelRefusalError):
         # we already raised this error ourselves earlier, so we don't need to mark it as unknown
         raise
     except Exception as e:
@@ -506,10 +509,21 @@ class AnthropicAPI(LanguageModelAPI):
     is_conversational: bool = True
 
     # Anthropic specific args
-    # unclear what the timeout ought to be actually, set to 1 minute for now because their default of 10 minutes seems insane
-    timeout: float = 60.0
+    # None means "use the per-model default" (see _get_timeout). Most models use 1 minute because
+    # the SDK default of 10 minutes seems insane. Claude Fable 5 uses a much longer timeout: its
+    # adaptive thinking is always on and counts toward output, so responses to review-sized prompts
+    # routinely take 3+ minutes to generate (measured ~190-210s for ~70k-token prompts). A 60s
+    # timeout would abort (and re-bill) requests that were going to succeed.
+    timeout: float | None = None
     max_retries: int = 0
     count_tokens_cache_path: Path | None = None
+
+    def _get_timeout(self) -> float:
+        if self.timeout is not None:
+            return self.timeout
+        if self.model_name == AnthropicModelName.CLAUDE_FABLE_5:
+            return 600.0
+        return 60.0
 
     @field_validator("model_name")  # pyre-ignore[56]: pyre doesn't understand pydantic
     @classmethod
@@ -538,14 +552,14 @@ class AnthropicAPI(LanguageModelAPI):
             return anthropic.AsyncAnthropic(
                 api_key=api_key,
                 max_retries=self.max_retries,
-                timeout=self.timeout,
+                timeout=self._get_timeout(),
                 default_headers={"anthropic-beta": _ANTHROPIC_BETA_PROMPT_CACHING},
             )
         else:
             return anthropic.AsyncAnthropic(
                 auth_token=auth_token,
                 max_retries=self.max_retries,
-                timeout=self.timeout,
+                timeout=self._get_timeout(),
                 default_headers={"anthropic-beta": f"{_ANTHROPIC_BETA_PROMPT_CACHING},{_ANTHROPIC_BETA_OAUTH}"},
             )
 
