@@ -31,6 +31,20 @@
           "supports_temperature": true
         }
       }
+    },
+    "anthropic": {
+      "name": "Anthropic",
+      "api_type": "openai_compatible",
+      "base_url": "https://api.anthropic.com/v1/",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "models": {
+        "fable": {
+          "model_id": "claude-fable-5",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "supports_temperature": false
+        }
+      }
     }
   }
 }

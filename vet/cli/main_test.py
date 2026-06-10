@@ -145,3 +145,38 @@ class TestListModels:
         captured = capsys.readouterr()
         assert "remote-model-a" in captured.out
         assert "remote-model-b" in captured.out
+
+
+class TestModelRefusal:
+    """CLI integration tests for surfacing model refusals."""
+
+    def test_model_refusal_prints_error_and_returns_1(self, tmp_path: Path, capsys) -> None:
+        import subprocess
+
+        from vet.imbue_core.agents.llm_apis.errors import ModelRefusalError
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"],
+            cwd=repo,
+            check=True,
+        )
+
+        env = _env_for_isolated_config(tmp_path) | {"ANTHROPIC_API_KEY": "test-key"}
+        refusal = ModelRefusalError(
+            "The model refused to generate a response (the provider's safety classifiers declined the request)."
+        )
+
+        with patch.dict(os.environ, env):
+            # configure_logging would tear down the logging handlers installed by test fixtures.
+            with patch("vet.cli.main.configure_logging"):
+                with patch("vet.api.find_issues", side_effect=refusal):
+                    exit_code = main(["test goal", "--repo", str(repo), "--quiet"])
+
+        assert exit_code == 1
+
+        captured = capsys.readouterr()
+        assert "refused" in captured.err
+        assert "try re-running" in captured.err

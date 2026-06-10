@@ -33,6 +33,7 @@ from vet.imbue_core.agents.llm_apis.data_types import ResponseStopReason
 from vet.imbue_core.agents.llm_apis.errors import BadAPIRequestError
 from vet.imbue_core.agents.llm_apis.errors import LanguageModelInvalidModelNameError
 from vet.imbue_core.agents.llm_apis.errors import MissingAPIKeyError
+from vet.imbue_core.agents.llm_apis.errors import ModelRefusalError
 from vet.imbue_core.agents.llm_apis.errors import NewSeedRetriableLanguageModelError
 from vet.imbue_core.agents.llm_apis.errors import SafelyRetriableTransientLanguageModelError
 from vet.imbue_core.agents.llm_apis.errors import TransientLanguageModelError
@@ -47,7 +48,6 @@ from vet.imbue_core.async_monkey_patches import log_exception
 from vet.imbue_core.caching import AsyncCache
 from vet.imbue_core.frozen_utils import FrozenDict
 from vet.imbue_core.frozen_utils import FrozenMapping
-from vet.imbue_core.itertools import only
 from vet.imbue_core.nested_evolver import assign
 from vet.imbue_core.nested_evolver import chill
 from vet.imbue_core.nested_evolver import evolver
@@ -61,6 +61,9 @@ class AnthropicModelName(enum.StrEnum):
     CLAUDE_4_6_OPUS = "claude-opus-4-6"
     CLAUDE_4_7_OPUS = "claude-opus-4-7"
     CLAUDE_4_8_OPUS = "claude-opus-4-8"
+    # Fable 5 is a Mythos-class model with a native 1M-token context window, so it does not need a
+    # separate "-long" variant the way the Opus models do.
+    CLAUDE_FABLE_5 = "claude-fable-5"
     CLAUDE_4_SONNET = "claude-sonnet-4-0"
     CLAUDE_4_5_SONNET = "claude-sonnet-4-5"
     CLAUDE_4_6_SONNET = "claude-sonnet-4-6"
@@ -170,6 +173,24 @@ ANTHROPIC_MODEL_INFO_BY_NAME: FrozenMapping[AnthropicModelName, ModelInfo] = Fro
                 cost_per_5m_cache_write_token=6.25 / 1_000_000,
                 cost_per_1h_cache_write_token=10 / 1_000_000,
                 cost_per_cache_read_token=0.50 / 1_000_000,
+            ),
+        ),
+        AnthropicModelName.CLAUDE_FABLE_5: ModelInfo(
+            model_name=AnthropicModelName.CLAUDE_FABLE_5,
+            # Fable 5 has a native 1M-token context window (verified against the API: inputs above
+            # 200k are accepted without any beta header, and the API rejects prompts over 1,000,000
+            # tokens). Pricing is a flat $10 / $50 per 1M tokens with no long-context tier.
+            cost_per_input_token=10.00 / 1_000_000,
+            cost_per_output_token=50.00 / 1_000_000,
+            max_input_tokens=1_000_000,
+            max_output_tokens=128_000,
+            rate_limit_req=4000 / 60,
+            rate_limit_tok=2_000_000 / 60,
+            rate_limit_output_tok=400_000 / 60,
+            provider_specific_info=AnthropicModelInfo(
+                cost_per_5m_cache_write_token=12.50 / 1_000_000,
+                cost_per_1h_cache_write_token=20 / 1_000_000,
+                cost_per_cache_read_token=1.00 / 1_000_000,
             ),
         ),
         AnthropicModelName.CLAUDE_4_SONNET: ModelInfo(
@@ -305,8 +326,37 @@ _MODELS_WITHOUT_TEMPERATURE: frozenset[AnthropicModelName] = frozenset(
         AnthropicModelName.CLAUDE_4_7_OPUS_LONG,
         AnthropicModelName.CLAUDE_4_8_OPUS,
         AnthropicModelName.CLAUDE_4_8_OPUS_LONG,
+        AnthropicModelName.CLAUDE_FABLE_5,
     }
 )
+
+
+def _extract_text_from_content_blocks(content_blocks: list, stop_reason: str | None = None) -> str:
+    """Concatenate the text from all ``text`` content blocks in an Anthropic message.
+
+    Some models (e.g. Claude Fable 5) emit a ``thinking`` block before the final ``text`` block even
+    when extended thinking is not explicitly requested, so the response can contain more than one
+    content block. We ignore non-text blocks (``thinking``, ``redacted_thinking``, etc.) and return
+    only the visible text. For responses with a single ``text`` block this matches the previous
+    ``only(content).text`` behavior.
+
+    Fable 5's safety classifiers can also produce a ``refusal`` stop reason with *no* content blocks
+    at all. In that case we raise ModelRefusalError so the refusal is surfaced to the user instead
+    of being silently treated as an empty (clean) review result. Missing text for any other reason
+    indicates a malformed response and raises BadAPIRequestError.
+    """
+    text_blocks = [block.text for block in content_blocks if getattr(block, "type", None) == "text"]
+    if not text_blocks:
+        if stop_reason == "refusal":
+            raise ModelRefusalError(
+                "The model refused to generate a response (the provider's safety classifiers " "declined the request)."
+            )
+        raise BadAPIRequestError(
+            f"Anthropic response contained no text content blocks (block types: "
+            f"{[getattr(block, 'type', None) for block in content_blocks]}, stop_reason: {stop_reason})"
+        )
+    return "".join(text_blocks)
+
 
 _ROLE_TO_ANTHROPIC_ROLE: Final[FrozenMapping[str, str]] = FrozenDict(
     {
@@ -437,7 +487,7 @@ def _anthropic_exception_manager() -> Iterator[None]:
     except httpx.RemoteProtocolError as e:
         logger.debug(str(e))
         raise TransientLanguageModelError("httpx.RemoteProtocolError") from e
-    except (BadAPIRequestError, TransientLanguageModelError, MissingAPIKeyError):
+    except (BadAPIRequestError, TransientLanguageModelError, MissingAPIKeyError, ModelRefusalError):
         # we already raised this error ourselves earlier, so we don't need to mark it as unknown
         raise
     except Exception as e:
@@ -459,10 +509,21 @@ class AnthropicAPI(LanguageModelAPI):
     is_conversational: bool = True
 
     # Anthropic specific args
-    # unclear what the timeout ought to be actually, set to 1 minute for now because their default of 10 minutes seems insane
-    timeout: float = 60.0
+    # None means "use the per-model default" (see _get_timeout). Most models use 1 minute because
+    # the SDK default of 10 minutes seems insane. Claude Fable 5 uses a much longer timeout: its
+    # adaptive thinking is always on and counts toward output, so responses to review-sized prompts
+    # routinely take 3+ minutes to generate (measured ~190-210s for ~70k-token prompts). A 60s
+    # timeout would abort (and re-bill) requests that were going to succeed.
+    timeout: float | None = None
     max_retries: int = 0
     count_tokens_cache_path: Path | None = None
+
+    def _get_timeout(self) -> float:
+        if self.timeout is not None:
+            return self.timeout
+        if self.model_name == AnthropicModelName.CLAUDE_FABLE_5:
+            return 600.0
+        return 60.0
 
     @field_validator("model_name")  # pyre-ignore[56]: pyre doesn't understand pydantic
     @classmethod
@@ -491,14 +552,14 @@ class AnthropicAPI(LanguageModelAPI):
             return anthropic.AsyncAnthropic(
                 api_key=api_key,
                 max_retries=self.max_retries,
-                timeout=self.timeout,
+                timeout=self._get_timeout(),
                 default_headers={"anthropic-beta": _ANTHROPIC_BETA_PROMPT_CACHING},
             )
         else:
             return anthropic.AsyncAnthropic(
                 auth_token=auth_token,
                 max_retries=self.max_retries,
-                timeout=self.timeout,
+                timeout=self._get_timeout(),
                 default_headers={"anthropic-beta": f"{_ANTHROPIC_BETA_PROMPT_CACHING},{_ANTHROPIC_BETA_OAUTH}"},
             )
 
@@ -567,7 +628,10 @@ class AnthropicAPI(LanguageModelAPI):
                         written_5m=api_result.usage.cache_creation.ephemeral_5m_input_tokens,
                         written_1h=api_result.usage.cache_creation.ephemeral_1h_input_tokens,
                     )
-                text = only(api_result.content).text
+                text = _extract_text_from_content_blocks(
+                    api_result.content,
+                    stop_reason=str(api_result.stop_reason) if api_result.stop_reason else None,
+                )
                 if api_result.stop_reason:
                     stop_reason = _ANTHROPIC_STOP_REASON_TO_STOP_REASON.get(
                         str(api_result.stop_reason), ResponseStopReason.NONE
@@ -647,7 +711,10 @@ class AnthropicAPI(LanguageModelAPI):
                         yield LanguageModelStreamDeltaEvent(delta=text_delta)
 
                     final_message = await stream.get_final_message()
-                    text = only(final_message.content).text
+                    text = _extract_text_from_content_blocks(
+                        final_message.content,
+                        stop_reason=str(final_message.stop_reason) if final_message.stop_reason else None,
+                    )
                     stop_reason = (
                         final_message.stop_reason if final_message.stop_reason is not None else ResponseStopReason.NONE
                     )

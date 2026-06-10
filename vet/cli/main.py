@@ -601,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
     from vet.formatters import issue_to_dict
     from vet.imbue_core.agents.llm_apis.errors import BadAPIRequestError
     from vet.imbue_core.agents.llm_apis.errors import MissingAPIKeyError
+    from vet.imbue_core.agents.llm_apis.errors import ModelRefusalError
     from vet.imbue_core.agents.llm_apis.errors import PromptTooLongError
     from vet.imbue_tools.types.vet_config import VetConfig
 
@@ -733,6 +734,13 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    except ModelRefusalError as e:
+        print(
+            f"vet: {e} This can happen spuriously on benign inputs; "
+            "try re-running, or use a different model via --model.",
+            file=sys.stderr,
+        )
+        return 1
     # TODO: This should be refactored so we only need to handle prompt too long errors when context is overfilled.
     except (PromptTooLongError, BadAPIRequestError) as e:
         if _is_context_overflow(e):
